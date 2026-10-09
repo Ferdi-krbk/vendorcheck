@@ -1,0 +1,19 @@
+name: vendorcheck
+description: Fail CI if embedded Python packages differ from the official PyPI release
+inputs:
+  path:
+    description: Directory or archive (.zip/.xpi/.vsix/.fda) to audit
+    required: true
+  only:
+    description: Space-separated package names to check (default all)
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.x"
+    - shell: bash
+      run: |
+        python "${{ github.action_path }}/vendorcheck.py" "${{ inputs.path }}" -v ${{ inputs.only != '' && format('--only {0}', inputs.only) || '' }}
