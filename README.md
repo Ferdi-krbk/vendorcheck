@@ -35,19 +35,27 @@ pip install git+https://github.com/Ferdi-krbk/vendorcheck
 ## Usage
 
 ```bash
-vendorcheck PATH [-v] [--json] [--lang en|tr] [--only NAME ...] [--cache DIR] [--allow-empty]
+vendorcheck PATH [-v | -vv] [--json] [--lang en|tr] [--only NAME ...] [--ignore GLOB ...]
+                 [--no-nested] [--cache DIR] [--allow-empty]
 ```
 
 | Option | Meaning |
 |---|---|
 | `-v` | list every modified / extra / missing file |
-| `--json` | machine-readable output |
+| `-vv` | additionally print a unified diff (official → embedded) for modified text files |
+| `--json` | machine-readable output (includes diffs with `-vv`) |
 | `--only NAME ...` | check just these packages |
+| `--ignore GLOB` | skip files matching the glob (relative to the package dir, e.g. `yt_dlp/version.py`); repeatable. For intentional local patches |
+| `--no-nested` | don't open archives found inside the input |
 | `--cache DIR` | reuse downloaded official releases |
 | `--allow-empty` | exit 0 if no embedded package is found (default: exit 2, so CI can't pass by checking nothing) |
 | `--lang tr` | Turkish output |
 
+Archives nested inside the input (`.zip .whl .egg .xpi .vsix .fda .pyz`, up to 2 levels, 2 GiB guard) are opened automatically and reported as `pkg 1.0 [inner.xpi!/]`.
+
 **Exit codes:** `0` identical · `1` differences found · `2` error / nothing checked.
+
+In GitHub Actions the result is also written to the job's **step summary** as a table.
 
 ## GitHub Action
 
@@ -74,7 +82,7 @@ Archives are extracted with zip-slip protection; nothing from the audited artifa
 
 - Only packages with version metadata (see above). Guessing name/version for bare copies is out of scope.
 - If PyPI only has platform wheels or an sdist, generated or compiled files show up as "extra".
-- Nested archives (a zip inside a zip) are not opened.
+- Archives nested deeper than 2 levels are not opened.
 - It proves your copy equals what PyPI serves, not that the PyPI release itself is trustworthy. Pair it with `pip-audit` and provenance tools like `trustcheck`.
 
 ## Related

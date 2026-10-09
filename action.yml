@@ -16,6 +16,10 @@ inputs:
     description: Do not fail when no embedded packages are found.
     required: false
     default: "false"
+  ignore:
+    description: Newline-separated globs to ignore (intentional local patches).
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
@@ -27,8 +31,12 @@ runs:
         VC_PATH: ${{ inputs.path }}
         VC_ONLY: ${{ inputs.only }}
         VC_EMPTY: ${{ inputs.allow-empty }}
+        VC_IGNORE: ${{ inputs.ignore }}
       run: |
         args=("$VC_PATH" -v)
         if [ "$VC_EMPTY" = "true" ]; then args+=(--allow-empty); fi
         if [ -n "$VC_ONLY" ]; then args+=(--only $VC_ONLY); fi
+        while IFS= read -r g; do
+          if [ -n "$g" ]; then args+=(--ignore "$g"); fi
+        done <<< "$VC_IGNORE"
         python "${{ github.action_path }}/vendorcheck.py" "${args[@]}"

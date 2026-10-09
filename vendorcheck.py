@@ -15,6 +15,8 @@ Exit code: 0 = everything identical, 1 = differences found,
 from __future__ import annotations
 
 import argparse
+import difflib
+import fnmatch
 import hashlib
 import io
 import json
@@ -31,7 +33,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 IGNORED_DIRS = {"__pycache__"}
 IGNORED_SUFFIXES = (".pyc", ".pyo")
 UA = {"User-Agent": f"vendorcheck/{__version__} (+https://github.com/Ferdi-krbk/vendorcheck)"}
@@ -223,17 +225,27 @@ def fetch_official(name: str, version: str, cache: Path) -> tuple[Path, str]:
 
 
 # ----------------------------------------------------------------- compare
-def collect(base: Path, container: Path, tops: list[str]) -> dict[str, Path]:
+def collect(container: Path, tops: list[str], ignore: tuple[str, ...] = ()) -> dict[str, Path]:
     files: dict[str, Path] = {}
     for t in tops:
         for root in (container / t, container / f"{t}.py"):
             if root.is_file():
-                files[root.relative_to(container).as_posix()] = root
+                candidates = [root]
             elif root.is_dir():
-                for p in root.rglob("*"):
-                    if p.is_file() and not is_ignored(p.relative_to(container)):
-                        files[p.relative_to(container).as_posix()] = p
+                candidates = [p for p in root.rglob("*") if p.is_file()]
+            else:
+                continue
+            for p in candidates:
+                rel = p.relative_to(container)
+                if is_ignored(rel) or matches_ignore(rel.as_posix(), ignore):
+                    continue
+                files[rel.as_posix()] = p
     return files
+
+
+def matches_ignore(rel: str, patterns: tuple[str, ...]) -> bool:
+    """Glob match on the posix path relative to the package container (e.g. 'foo/*.orig')."""
+    return any(fnmatch.fnmatchcase(rel, p) for p in patterns)
 
 
 def same_content(a: Path, b: Path) -> bool:
@@ -249,6 +261,22 @@ def same_content(a: Path, b: Path) -> bool:
     return da.replace(b"\r\n", b"\n") == db.replace(b"\r\n", b"\n")
 
 
+def make_diff(official: Path, embedded: Path, rel: str, limit: int = 200) -> str:
+    """Unified diff official -> embedded; empty string for binary files."""
+    try:
+        a, b = official.read_bytes(), embedded.read_bytes()
+    except OSError:
+        return ""
+    if b"\0" in a[:8192] or b"\0" in b[:8192]:
+        return ""
+    lines = list(difflib.unified_diff(
+        a.decode("utf-8", "replace").splitlines(), b.decode("utf-8", "replace").splitlines(),
+        f"official/{rel}", f"embedded/{rel}", lineterm=""))
+    if len(lines) > limit:
+        lines = lines[:limit] + [f"... ({len(lines) - limit} more diff lines)"]
+    return "\n".join(lines)
+
+
 @dataclass
 class Result:
     name: str
@@ -262,6 +290,7 @@ class Result:
     modified: list[str] = field(default_factory=list)
     extra: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+    diffs: dict[str, str] = field(default_factory=dict)
 
     @property
     def clean(self) -> bool:
@@ -275,8 +304,10 @@ def find_official_container(off: Path, tops: list[str]) -> Path:
     return off
 
 
-def check_one(e: Embedded, cache: Path, root: Path) -> Result:
-    res = Result(e.name, e.version, e.source, e.container.relative_to(root).as_posix() or ".")
+def check_one(e: Embedded, cache: Path, root: Path, ignore: tuple[str, ...] = (),
+              want_diff: bool = False, prefix: str = "") -> Result:
+    loc = (e.container.relative_to(root).as_posix() or ".")
+    res = Result(e.name, e.version, e.source, f"{prefix}{loc}" if prefix else loc)
     try:
         off, res.artifact = fetch_official(e.name, e.version, cache)
     except urllib.error.HTTPError as ex:
@@ -286,8 +317,8 @@ def check_one(e: Embedded, cache: Path, root: Path) -> Result:
         res.status, res.error = "error", str(ex)
         return res
     off_container = find_official_container(off, e.tops)
-    mine = collect(root, e.container, e.tops)
-    theirs = collect(off, off_container, e.tops)
+    mine = collect(e.container, e.tops, ignore)
+    theirs = collect(off_container, e.tops, ignore)
     for rel, p in sorted(mine.items()):
         if rel not in theirs:
             res.extra.append(rel)
@@ -295,8 +326,62 @@ def check_one(e: Embedded, cache: Path, root: Path) -> Result:
             res.same += 1
         else:
             res.modified.append(rel)
+            if want_diff:
+                d = make_diff(theirs[rel], p, rel)
+                if d:
+                    res.diffs[rel] = d
     res.missing = sorted(set(theirs) - set(mine))
     return res
+
+
+
+NESTED_EXTS = (".zip", ".whl", ".egg", ".xpi", ".vsix", ".fda", ".pyz")
+MAX_NESTED_BYTES = 2 * 1024**3  # zip-bomb guard for nested archive expansion
+
+
+def expand_nested(root: Path, tmp: Path, max_depth: int = 2) -> list[tuple[Path, str]]:
+    """Return [(dir, label_prefix)] for root plus any zip-like archives found inside it."""
+    roots: list[tuple[Path, str]] = [(root, "")]
+    frontier = [(root, "")]
+    total, counter = 0, 0
+    for _ in range(max_depth):
+        nxt: list[tuple[Path, str]] = []
+        for base, prefix in frontier:
+            for p in sorted(base.rglob("*")):
+                if not (p.is_file() and p.suffix.lower() in NESTED_EXTS and zipfile.is_zipfile(p)):
+                    continue
+                with zipfile.ZipFile(p) as zf:
+                    total += sum(i.file_size for i in zf.infolist())
+                    if total > MAX_NESTED_BYTES:
+                        raise RuntimeError("nested archives too large (zip-bomb guard)")
+                    counter += 1
+                    dest = tmp / "nested" / str(counter)
+                    safe_extract_zip(zf, dest)
+                label = f"{prefix}{p.relative_to(base).as_posix()}!/"
+                roots.append((dest, label))
+                nxt.append((dest, label))
+        frontier = nxt
+    return roots
+
+
+def write_step_summary(results: list[Result]) -> None:
+    """Append a markdown table to $GITHUB_STEP_SUMMARY when running in GitHub Actions."""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    rows = ["### vendorcheck", "", "| Package | Version | Identical | Modified | Extra | Missing | Status |",
+            "|---|---|---:|---:|---:|---:|---|"]
+    for r in results:
+        status = "error" if r.status == "error" else ("clean" if r.clean else "DIFFERS")
+        rows.append(f"| `{r.name}` | {r.version} | {r.same} | {len(r.modified)} | {len(r.extra)} "
+                    f"| {len(r.missing)} | {status} |")
+    for r in results:
+        for title, items in (("modified", r.modified), ("extra", r.extra), ("missing", r.missing)):
+            if items:
+                rows += ["", f"<details><summary>{r.name} {r.version}: {title} ({len(items)})</summary>", ""]
+                rows += [f"- `{i}`" for i in items[:100]] + ["", "</details>"]
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("\n".join(rows) + "\n")
 
 
 STRINGS = {
@@ -314,6 +399,8 @@ STRINGS = {
 def summarize(r: Result, lang: str = "en") -> str:
     s = STRINGS[lang]
     label = f"{r.name.replace('-', '_')} {r.version}"
+    if "!/" in r.location:
+        label += f" [{r.location}]"
     if r.status == "error":
         return f"{label}: {s['err']} ({r.error})"
     same_word = s["same1"] if r.same == 1 else s["same"]
@@ -329,9 +416,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("path", help="directory or archive (.zip/.fda/.xpi/.vsix/...)")
     ap.add_argument("--version", action="version", version=f"vendorcheck {__version__}")
     ap.add_argument("--json", action="store_true", help="machine readable output")
-    ap.add_argument("-v", "--verbose", action="store_true", help="list differing files")
+    ap.add_argument("-v", "--verbose", action="count", default=0,
+                    help="-v list differing files, -vv also print unified diffs")
     ap.add_argument("--cache", help="download cache dir (default: temp)")
     ap.add_argument("--only", nargs="*", help="check only these package names")
+    ap.add_argument("--ignore", action="append", default=[], metavar="GLOB",
+                    help="ignore files matching GLOB (relative to the package dir, e.g. "
+                         "'yt_dlp/version.py'); repeatable. For intentional local patches.")
+    ap.add_argument("--no-nested", action="store_true", help="do not open archives inside the input")
     ap.add_argument("--lang", choices=sorted(STRINGS), default="en", help="output language")
     ap.add_argument("--allow-empty", action="store_true",
                     help="exit 0 even if no embedded packages were found")
@@ -358,18 +450,20 @@ def main(argv: list[str] | None = None) -> int:
         cache = Path(args.cache) if args.cache else tmp / "cache"
         cache.mkdir(parents=True, exist_ok=True)
 
-        embedded = discover(root)
-        if args.only:
-            wanted = {norm_name(n) for n in args.only}
-            embedded = [e for e in embedded if norm_name(e.name) in wanted]
-        # dedupe identical (name, version, container)
-        seen, uniq = set(), []
-        for e in embedded:
-            k = (norm_name(e.name), e.version, e.container)
-            if k not in seen:
-                seen.add(k)
-                uniq.append(e)
-        results = [check_one(e, cache, root) for e in uniq]
+        roots = [(root, "")] if args.no_nested else expand_nested(root, tmp)
+        wanted = {norm_name(n) for n in args.only} if args.only else None
+        ignore = tuple(args.ignore)
+        results: list[Result] = []
+        seen: set = set()
+        for rdir, prefix in roots:
+            for e in discover(rdir):
+                if wanted and norm_name(e.name) not in wanted:
+                    continue
+                key = (norm_name(e.name), e.version, e.container)
+                if key in seen:
+                    continue
+                seen.add(key)
+                results.append(check_one(e, cache, rdir, ignore, args.verbose >= 2, prefix))
 
         if args.json:
             print(json.dumps([r.__dict__ | {"clean": r.clean} for r in results],
@@ -384,6 +478,9 @@ def main(argv: list[str] | None = None) -> int:
                     for tag, items in zip(tags, (r.modified, r.extra, r.missing)):
                         for it in items:
                             print(f"    [{tag}] {it}")
+                            if tag == tags[0] and it in r.diffs:
+                                print("\n".join("        " + l for l in r.diffs[it].splitlines()))
+        write_step_summary(results)
         if not results:
             return 0 if args.allow_empty else 2
         if any(r.status == "error" for r in results):

@@ -43,3 +43,8 @@ jobs:
           path: build/tampered
       - name: Assert the action failed
         run: test "${{ steps.tampered.outcome }}" = "failure"
+      - name: Intentional patch passes when ignored
+        uses: ./
+        with:
+          path: build/tampered
+          ignore: idna/core.py
