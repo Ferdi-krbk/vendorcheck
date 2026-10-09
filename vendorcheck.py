@@ -2,13 +2,15 @@
 """vendorcheck: is the embedded Python library identical to the official PyPI release?
 
 Usage:
-    python vendorcheck.py PATH [--json] [-v] [--cache DIR] [--only NAME ...]
+    python vendorcheck.py PATH [--json] [-v] [--lang en|tr] [--cache DIR]
+                          [--only NAME ...] [--allow-empty]
 
 PATH is a directory or a zip-like archive (.zip, .fda, .xpi, .vsix, .whl, ...).
 v1 scope: only packages whose name+version can be read from metadata
 (*.dist-info/METADATA, *.egg-info/PKG-INFO) or from <pkg>/version.py.
 
-Exit code: 0 = everything identical, 1 = differences found, 2 = error.
+Exit code: 0 = everything identical, 1 = differences found,
+           2 = error or nothing to check.
 """
 from __future__ import annotations
 
@@ -285,13 +287,24 @@ def check_one(e: Embedded, cache: Path, root: Path) -> Result:
     return res
 
 
-def summarize(r: Result) -> str:
+STRINGS = {
+    "en": {"err": "COULD NOT CHECK", "same": "files identical", "mod": "modified",
+           "extra": "extra", "miss": "missing", "tags": ("modified", "extra", "missing"),
+           "none": "No embedded packages found (v1 needs .dist-info / .egg-info / version.py)."},
+    "tr": {"err": "KONTROL EDİLEMEDİ", "same": "dosya aynı", "mod": "değişmiş",
+           "extra": "fazladan", "miss": "eksik", "tags": ("değişmiş", "fazladan", "eksik"),
+           "none": "Gömülü paket bulunamadı (v1: .dist-info / .egg-info / version.py gerekir)."},
+}
+
+
+def summarize(r: Result, lang: str = "en") -> str:
+    s = STRINGS[lang]
     label = f"{r.name.replace('-', '_')} {r.version}"
     if r.status == "error":
-        return f"{label}: KONTROL EDİLEMEDİ ({r.error})"
-    parts = [f"{r.same} dosya aynı", f"{len(r.modified)} değişmiş", f"{len(r.extra)} fazladan"]
+        return f"{label}: {s['err']} ({r.error})"
+    parts = [f"{r.same} {s['same']}", f"{len(r.modified)} {s['mod']}", f"{len(r.extra)} {s['extra']}"]
     if r.missing:
-        parts.append(f"{len(r.missing)} eksik")
+        parts.append(f"{len(r.missing)} {s['miss']}")
     return f"{label}: " + ", ".join(parts) + "."
 
 
@@ -303,6 +316,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-v", "--verbose", action="store_true", help="list differing files")
     ap.add_argument("--cache", help="download cache dir (default: temp)")
     ap.add_argument("--only", nargs="*", help="check only these package names")
+    ap.add_argument("--lang", choices=sorted(STRINGS), default="en", help="output language")
+    ap.add_argument("--allow-empty", action="store_true",
+                    help="exit 0 even if no embedded packages were found")
     args = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -344,14 +360,16 @@ def main(argv: list[str] | None = None) -> int:
                              indent=2, ensure_ascii=False))
         else:
             if not results:
-                print("Gömülü paket bulunamadı (v1: .dist-info / .egg-info / version.py gerekir).")
+                print(STRINGS[args.lang]["none"])
             for r in results:
-                print(summarize(r))
+                print(summarize(r, args.lang))
                 if args.verbose:
-                    for tag, items in (("değişmiş", r.modified), ("fazladan", r.extra),
-                                       ("eksik", r.missing)):
+                    tags = STRINGS[args.lang]["tags"]
+                    for tag, items in zip(tags, (r.modified, r.extra, r.missing)):
                         for it in items:
                             print(f"    [{tag}] {it}")
+        if not results:
+            return 0 if args.allow_empty else 2
         if any(r.status == "error" for r in results):
             return 2 if not any(not r.clean for r in results if r.status == "ok") else 1
         return 0 if all(r.clean for r in results) else 1

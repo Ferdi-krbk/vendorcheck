@@ -1,13 +1,21 @@
 name: vendorcheck
-description: Fail CI if embedded Python packages differ from the official PyPI release
+description: Fail CI if embedded (vendored/bundled) Python packages differ from the official PyPI release.
+author: Ferdi-krbk
+branding:
+  icon: shield
+  color: green
 inputs:
   path:
-    description: Directory or archive (.zip/.xpi/.vsix/.fda) to audit
+    description: Directory or archive (.zip/.xpi/.vsix/.fda/...) to audit.
     required: true
   only:
-    description: Space-separated package names to check (default all)
+    description: Space-separated package names to check (default - all detected).
     required: false
     default: ""
+  allow-empty:
+    description: Do not fail when no embedded packages are found.
+    required: false
+    default: "false"
 runs:
   using: composite
   steps:
@@ -15,5 +23,12 @@ runs:
       with:
         python-version: "3.x"
     - shell: bash
+      env:
+        VC_PATH: ${{ inputs.path }}
+        VC_ONLY: ${{ inputs.only }}
+        VC_EMPTY: ${{ inputs.allow-empty }}
       run: |
-        python "${{ github.action_path }}/vendorcheck.py" "${{ inputs.path }}" -v ${{ inputs.only != '' && format('--only {0}', inputs.only) || '' }}
+        args=("$VC_PATH" -v)
+        if [ "$VC_EMPTY" = "true" ]; then args+=(--allow-empty); fi
+        if [ -n "$VC_ONLY" ]; then args+=(--only $VC_ONLY); fi
+        python "${{ github.action_path }}/vendorcheck.py" "${args[@]}"

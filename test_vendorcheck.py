@@ -49,3 +49,14 @@ def test_zip_slip_rejected(tmp_path):
     except RuntimeError:
         return
     raise AssertionError("zip-slip not rejected")
+
+
+def test_empty_dir_fails_unless_allowed(tmp_path, capsys):
+    assert vc.main([str(tmp_path)]) == 2
+    assert vc.main([str(tmp_path), "--allow-empty"]) == 0
+
+
+def test_summary_languages():
+    r = vc.Result("yt-dlp", "2026.8.19", "dist-info", ".", same=1049, modified=["a"], extra=["b", "c"])
+    assert vc.summarize(r) == "yt_dlp 2026.8.19: 1049 files identical, 1 modified, 2 extra."
+    assert vc.summarize(r, "tr") == "yt_dlp 2026.8.19: 1049 dosya aynı, 1 değişmiş, 2 fazladan."

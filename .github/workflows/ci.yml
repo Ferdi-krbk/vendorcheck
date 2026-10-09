@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install pytest
+      - run: python -m pytest -q
+
+  action-selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build a vendored directory
+        run: pip install --target build/clean idna==3.7 six==1.16.0
+      - name: Clean vendored code must pass
+        uses: ./
+        with:
+          path: build/clean
+      - name: Tamper with it
+        run: |
+          cp -r build/clean build/tampered
+          echo "# backdoor" >> build/tampered/idna/core.py
+      - name: Tampered code must fail
+        id: tampered
+        uses: ./
+        continue-on-error: true
+        with:
+          path: build/tampered
+      - name: Assert the action failed
+        run: test "${{ steps.tampered.outcome }}" = "failure"
