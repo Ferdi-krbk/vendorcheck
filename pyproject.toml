@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vendorcheck"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Check whether embedded/vendored Python packages are identical to the official PyPI release."
 readme = "README.md"
 license = { text = "MIT" }
@@ -24,3 +24,6 @@ Homepage = "https://github.com/Ferdi-krbk/vendorcheck"
 
 [tool.setuptools]
 py-modules = ["vendorcheck"]
+
+[tool.setuptools.dynamic]
+version = { attr = "vendorcheck.__version__" }

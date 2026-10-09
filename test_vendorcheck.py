@@ -60,3 +60,14 @@ def test_summary_languages():
     r = vc.Result("yt-dlp", "2026.8.19", "dist-info", ".", same=1049, modified=["a"], extra=["b", "c"])
     assert vc.summarize(r) == "yt_dlp 2026.8.19: 1049 files identical, 1 modified, 2 extra."
     assert vc.summarize(r, "tr") == "yt_dlp 2026.8.19: 1049 dosya aynı, 1 değişmiş, 2 fazladan."
+
+
+def test_singular_file_word():
+    r = vc.Result("six", "1.16.0", "dist-info", ".", same=1)
+    assert vc.summarize(r) == "six 1.16.0: 1 file identical, 0 modified, 0 extra."
+
+
+def test_cached_sdist_descends(tmp_path):
+    (tmp_path / "pkg-1.0").mkdir()
+    assert vc._descend_sdist(tmp_path, "pkg-1.0.tar.gz") == tmp_path / "pkg-1.0"
+    assert vc._descend_sdist(tmp_path, "pkg-1.0-py3-none-any.whl") == tmp_path

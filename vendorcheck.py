@@ -24,15 +24,17 @@ import shutil
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+__version__ = "0.1.1"
 IGNORED_DIRS = {"__pycache__"}
 IGNORED_SUFFIXES = (".pyc", ".pyo")
-UA = {"User-Agent": "vendorcheck/0.1 (+supply-chain audit)"}
+UA = {"User-Agent": f"vendorcheck/{__version__} (+https://github.com/Ferdi-krbk/vendorcheck)"}
 
 
 # ----------------------------------------------------------------- helpers
@@ -161,10 +163,21 @@ def discover(root: Path) -> list[Embedded]:
 
 
 # -------------------------------------------------------------------- PyPI
-def http_get(url: str) -> bytes:
-    req = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return r.read()
+def http_get(url: str, attempts: int = 3) -> bytes:
+    """GET with retry + exponential backoff on 429/5xx and connection errors."""
+    for i in range(attempts):
+        try:
+            req = urllib.request.Request(url, headers=UA)
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.read()
+        except urllib.error.HTTPError as ex:
+            if ex.code not in (429, 500, 502, 503, 504) or i == attempts - 1:
+                raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            if i == attempts - 1:
+                raise
+        time.sleep(2 ** i)
+    raise RuntimeError("unreachable")
 
 
 def pick_artifact(urls: list[dict]) -> dict | None:
@@ -176,6 +189,14 @@ def pick_artifact(urls: list[dict]) -> dict | None:
     return sd[0] if sd else None
 
 
+def _descend_sdist(out: Path, filename: str) -> Path:
+    """An sdist unpacks into a single top directory; wheels do not."""
+    if filename.endswith((".whl", ".zip")):
+        return out
+    subs = [p for p in out.iterdir() if p.is_dir()]
+    return subs[0] if len(subs) == 1 else out
+
+
 def fetch_official(name: str, version: str, cache: Path) -> tuple[Path, str]:
     """Download + hash-verify official artifact, return (extracted dir, artifact filename)."""
     meta = json.loads(http_get(f"https://pypi.org/pypi/{norm_name(name)}/{version}/json"))
@@ -183,15 +204,13 @@ def fetch_official(name: str, version: str, cache: Path) -> tuple[Path, str]:
     if not art:
         raise RuntimeError("no pure wheel or sdist on PyPI")
     out = cache / f"{norm_name(name)}-{version}"
-    marker = out / ".ok"
-    if marker.exists():
-        return out, art["filename"]
+    if (out / ".ok").exists():
+        return _descend_sdist(out, art["filename"]), art["filename"]
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
     data = http_get(art["url"])
-    expected = art["digests"]["sha256"]
-    if sha256_bytes(data) != expected:
+    if sha256_bytes(data) != art["digests"]["sha256"]:
         raise RuntimeError("downloaded artifact sha256 does not match PyPI-published digest")
     if art["filename"].endswith((".whl", ".zip")):
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
@@ -199,15 +218,8 @@ def fetch_official(name: str, version: str, cache: Path) -> tuple[Path, str]:
     else:
         with tarfile.open(fileobj=io.BytesIO(data)) as tf:
             safe_extract_tar(tf, out)
-        # sdist has a single top dir: descend
-        subs = [p for p in out.iterdir() if p.is_dir()]
-        if len(subs) == 1:
-            out = subs[0]
-            (out / ".ok").touch()
-            (out.parent / ".ok").touch()
-            return out, art["filename"]
-    marker.touch()
-    return out, art["filename"]
+    (out / ".ok").touch()
+    return _descend_sdist(out, art["filename"]), art["filename"]
 
 
 # ----------------------------------------------------------------- compare
@@ -288,11 +300,13 @@ def check_one(e: Embedded, cache: Path, root: Path) -> Result:
 
 
 STRINGS = {
-    "en": {"err": "COULD NOT CHECK", "same": "files identical", "mod": "modified",
-           "extra": "extra", "miss": "missing", "tags": ("modified", "extra", "missing"),
+    "en": {"err": "COULD NOT CHECK", "same": "files identical", "same1": "file identical",
+           "mod": "modified", "extra": "extra", "miss": "missing",
+           "tags": ("modified", "extra", "missing"),
            "none": "No embedded packages found (v1 needs .dist-info / .egg-info / version.py)."},
-    "tr": {"err": "KONTROL EDİLEMEDİ", "same": "dosya aynı", "mod": "değişmiş",
-           "extra": "fazladan", "miss": "eksik", "tags": ("değişmiş", "fazladan", "eksik"),
+    "tr": {"err": "KONTROL EDİLEMEDİ", "same": "dosya aynı", "same1": "dosya aynı",
+           "mod": "değişmiş", "extra": "fazladan", "miss": "eksik",
+           "tags": ("değişmiş", "fazladan", "eksik"),
            "none": "Gömülü paket bulunamadı (v1: .dist-info / .egg-info / version.py gerekir)."},
 }
 
@@ -302,7 +316,8 @@ def summarize(r: Result, lang: str = "en") -> str:
     label = f"{r.name.replace('-', '_')} {r.version}"
     if r.status == "error":
         return f"{label}: {s['err']} ({r.error})"
-    parts = [f"{r.same} {s['same']}", f"{len(r.modified)} {s['mod']}", f"{len(r.extra)} {s['extra']}"]
+    same_word = s["same1"] if r.same == 1 else s["same"]
+    parts = [f"{r.same} {same_word}", f"{len(r.modified)} {s['mod']}", f"{len(r.extra)} {s['extra']}"]
     if r.missing:
         parts.append(f"{len(r.missing)} {s['miss']}")
     return f"{label}: " + ", ".join(parts) + "."
@@ -312,6 +327,7 @@ def summarize(r: Result, lang: str = "en") -> str:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="vendorcheck", description=__doc__.split("\n\n")[0])
     ap.add_argument("path", help="directory or archive (.zip/.fda/.xpi/.vsix/...)")
+    ap.add_argument("--version", action="version", version=f"vendorcheck {__version__}")
     ap.add_argument("--json", action="store_true", help="machine readable output")
     ap.add_argument("-v", "--verbose", action="store_true", help="list differing files")
     ap.add_argument("--cache", help="download cache dir (default: temp)")
