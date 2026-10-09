@@ -1,0 +1,9 @@
+LICENSE
+README.md
+pyproject.toml
+vendorcheck.py
+vendorcheck.egg-info/PKG-INFO
+vendorcheck.egg-info/SOURCES.txt
+vendorcheck.egg-info/dependency_links.txt
+vendorcheck.egg-info/entry_points.txt
+vendorcheck.egg-info/top_level.txt

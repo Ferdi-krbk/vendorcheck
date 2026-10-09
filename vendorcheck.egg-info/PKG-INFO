@@ -1,3 +1,18 @@
+Metadata-Version: 2.4
+Name: vendorcheck
+Version: 0.2.0
+Summary: Check whether embedded/vendored Python packages are identical to the official PyPI release.
+License: MIT
+Project-URL: Homepage, https://github.com/Ferdi-krbk/vendorcheck
+Keywords: supply-chain,security,vendoring,pypi,audit
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Topic :: Security
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Dynamic: license-file
+
 # vendorcheck
 
 [![CI](https://github.com/Ferdi-krbk/vendorcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/Ferdi-krbk/vendorcheck/actions/workflows/ci.yml)
@@ -69,40 +84,21 @@ In GitHub Actions the result is also written to the job's **step summary** as a 
 
 The job fails when embedded code differs from the official release. The repo's own [CI](.github/workflows/ci.yml) proves it: a clean vendored tree must pass and a tampered one must fail.
 
-## Real-world origin story: Auditing an extension
-
-`vendorcheck` was built out of a real supply-chain audit: inspecting a popular Free Download Manager (FDM) extension package (`Elephant.fda`) that embedded its own Python runtime and bundled libraries like `yt-dlp`. 
-
-Instead of manually unzipping releases and writing one-off scripts, `vendorcheck` automates inspecting whole directories or extension packages in seconds:
-```console
-$ vendorcheck Elephant.fda -v
-yt_dlp 2026.8.19 [python/lib/site-packages!/]: 1049 files identical, 0 modified, 0 extra.
-```
-
 ## How it works
 
-1. **Detect** embedded packages through:
-   - `*.dist-info/METADATA` or `*.egg-info/PKG-INFO`
-   - `version.py`, `_version.py`, or `__init__.py` (`__version__ = "..."`)
-2. **Fetch** official release metadata from PyPI:
-   - Prefers pure Python wheels (`-none-any.whl`).
-   - Intelligently matches compiled platform wheels for the host OS/Python (via `packaging.tags`).
-   - Falls back to official source distributions (`sdist`).
-   - Validates cryptographic SHA-256 against PyPI's published digest.
-3. **Compare** each file's SHA-256 digest:
-   - Normalizes text line endings (`CRLF` vs `LF` git differences won't falsely flag).
-   - Automatically ignores `__pycache__` and bytecode (`.pyc`).
-   - Computes unified diffs (`-vv`) for modified code.
-4. **Report** identical, modified, extra, or missing files.
+1. **Detect** packages through `*.dist-info/METADATA`, `*.egg-info/PKG-INFO`, or `<pkg>/version.py` (`__version__ = "..."`).
+2. **Fetch** `https://pypi.org/pypi/<name>/<version>/json`, prefer a pure `py3-none-any` wheel, fall back to the sdist, and verify its SHA-256 against PyPI's digest.
+3. **Compare** each file's SHA-256. Line-ending-only differences (CRLF vs LF) are tolerated; `__pycache__` and `.pyc` are ignored.
+4. **Report** identical / modified / extra (and missing) files.
 
-Archives are extracted safely with strict directory traversal (zip-slip) protection; zero audited untrusted code is executed.
+Archives are extracted with zip-slip protection; nothing from the audited artifact is ever executed.
 
-## Limits
+## Limits (v1)
 
-- Packages completely stripped of all version indicators require metadata or a version attribute.
-- In cases where only sdist is available for C-extensions, build artifacts not present upstream may appear as "extra".
+- Only packages with version metadata (see above). Guessing name/version for bare copies is out of scope.
+- If PyPI only has platform wheels or an sdist, generated or compiled files show up as "extra".
 - Archives nested deeper than 2 levels are not opened.
-- It proves your copy equals what PyPI serves, not that the PyPI release itself is benign. Combine with tools like `pip-audit`.
+- It proves your copy equals what PyPI serves, not that the PyPI release itself is trustworthy. Pair it with `pip-audit` and provenance tools like `trustcheck`.
 
 ## Related
 

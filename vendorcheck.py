@@ -33,7 +33,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 IGNORED_DIRS = {"__pycache__"}
 IGNORED_SUFFIXES = (".pyc", ".pyo")
 UA = {"User-Agent": f"vendorcheck/{__version__} (+https://github.com/Ferdi-krbk/vendorcheck)"}
@@ -127,6 +127,39 @@ def tops_from_info(info_dir: Path, fallback: str) -> list[str]:
     return [c for c in cands if (container / c).is_dir() or (container / f"{c}.py").is_file()]
 
 
+
+def guess_version_by_files(name: str, files_hashes: dict[str, str], cache: Path) -> str | None:
+    """Guess package version by querying PyPI releases when no metadata exists."""
+    try:
+        meta = json.loads(http_get(f"https://pypi.org/pypi/{norm_name(name)}/json"))
+        releases = meta.get("releases", {})
+        # Check latest versions first
+        sorted_vers = list(reversed(list(releases.keys())))[:25]
+        for ver in sorted_vers:
+            arts = releases.get(ver, [])
+            art = pick_artifact(arts)
+            if not art:
+                continue
+            try:
+                off, _ = fetch_official(name, ver, cache)
+                # Sample 2-3 files to test match
+                matches = 0
+                total_sampled = 0
+                for rel_path, expected_hash in list(files_hashes.items())[:5]:
+                    cand = off / rel_path
+                    if cand.is_file():
+                        total_sampled += 1
+                        if sha256_file(cand) == expected_hash:
+                            matches += 1
+                if total_sampled > 0 and matches == total_sampled:
+                    return ver
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
 def discover(root: Path) -> list[Embedded]:
     found: list[Embedded] = []
     covered: set[Path] = set()
@@ -148,19 +181,30 @@ def discover(root: Path) -> list[Embedded]:
                                       "dist-info" if sub.endswith(".dist-info") else "egg-info"))
                 for t in tops:
                     covered.add((d / t).resolve())
-    # version.py fallback: top-level packages only
+    # Version detection fallbacks for bare/unregistered directories
     for dirpath, dirnames, filenames in os.walk(root):
         d = Path(dirpath)
-        if "version.py" in filenames and "__init__.py" in filenames:
+        if "__init__.py" in filenames:
             if (d.parent / "__init__.py").exists() or d.resolve() in covered:
                 continue
             if any(c in covered for c in [d.resolve(), *d.resolve().parents]):
                 continue
-            m = re.search(r"""^__version__\s*=\s*['"]([^'"]+)['"]""",
-                          read_text(d / "version.py"), re.M)
-            if m:
-                found.append(Embedded(d.name.replace("_", "-"), m.group(1), d.parent,
-                                      [d.name], "version.py"))
+
+            # Case A: version.py / _version.py / __init__.py __version__
+            found_ver = None
+            source_tag = "version.py"
+            for vfile in ("version.py", "_version.py", "__init__.py"):
+                if vfile in filenames:
+                    m = re.search(r"""^__version__\s*=\s*['"]([^'"]+)['"]""",
+                                  read_text(d / vfile), re.M)
+                    if m:
+                        found_ver = m.group(1)
+                        source_tag = vfile
+                        break
+            if found_ver:
+                found.append(Embedded(d.name.replace("_", "-"), found_ver, d.parent,
+                                      [d.name], source_tag))
+                covered.add(d.resolve())
     return found
 
 
@@ -183,10 +227,26 @@ def http_get(url: str, attempts: int = 3) -> bytes:
 
 
 def pick_artifact(urls: list[dict]) -> dict | None:
+    # 1. Pure Python wheel (-none-any.whl)
     wheels = [u for u in urls if u["packagetype"] == "bdist_wheel"
               and u["filename"].endswith("-none-any.whl")]
     if wheels:
         return wheels[0]
+    # 2. Platform wheel matching current system/Python if packaging is available
+    try:
+        import packaging.tags, packaging.utils
+        sys_tags = set(packaging.tags.sys_tags())
+        plat_wheels = []
+        for u in urls:
+            if u["packagetype"] == "bdist_wheel":
+                wtags = packaging.utils.parse_wheel_filename(u["filename"])[-1]
+                if any(t in sys_tags for t in wtags):
+                    plat_wheels.append(u)
+        if plat_wheels:
+            return plat_wheels[0]
+    except Exception:
+        pass
+    # 3. Source distribution (sdist)
     sd = [u for u in urls if u["packagetype"] == "sdist"]
     return sd[0] if sd else None
 

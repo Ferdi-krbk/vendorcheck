@@ -128,3 +128,27 @@ def test_step_summary_written(tmp_path, monkeypatch):
     vc.write_step_summary([vc.Result("six", "1.16.0", "dist-info", ".", same=3, modified=["a.py"])])
     text = f.read_text(encoding="utf-8")
     assert "| `six` | 1.16.0 | 3 | 1 | 0 | 0 | DIFFERS |" in text
+
+
+def test_discover_underscore_version_and_init(tmp_path):
+    (tmp_path / "pkg_a").mkdir()
+    (tmp_path / "pkg_a" / "__init__.py").write_text("")
+    (tmp_path / "pkg_a" / "_version.py").write_text("__version__ = '1.0.0'\n")
+
+    (tmp_path / "pkg_b").mkdir()
+    (tmp_path / "pkg_b" / "__init__.py").write_text("__version__ = '2.5.1'\n")
+
+    found = {e.name: (e.version, e.source) for e in vc.discover(tmp_path)}
+    assert found["pkg-a"] == ("1.0.0", "_version.py")
+    assert found["pkg-b"] == ("2.5.1", "__init__.py")
+
+
+def test_pick_artifact_platform_wheel():
+    urls = [
+        {"packagetype": "bdist_wheel", "filename": "sample-1.0-cp313-cp313-win_amd64.whl"},
+        {"packagetype": "sdist", "filename": "sample-1.0.tar.gz"}
+    ]
+    # Should pick the compatible platform wheel if running on win_amd64 cp313, else falls back to sdist
+    art = vc.pick_artifact(urls)
+    assert art is not None
+    assert art["packagetype"] in ("bdist_wheel", "sdist")

@@ -7,11 +7,10 @@ name = "vendorcheck"
 dynamic = ["version"]
 description = "Check whether embedded/vendored Python packages are identical to the official PyPI release."
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 requires-python = ">=3.9"
 keywords = ["supply-chain", "security", "vendoring", "pypi", "audit"]
 classifiers = [
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Topic :: Security",
 ]
