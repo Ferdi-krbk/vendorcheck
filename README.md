@@ -1,6 +1,7 @@
 # vendorcheck
 
 [![CI](https://github.com/Ferdi-krbk/vendorcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/Ferdi-krbk/vendorcheck/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/vendorcheck.svg)](https://pypi.org/project/vendorcheck/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **Is the Python library bundled inside your app, add-on or extension byte-for-byte the official PyPI release?**
@@ -28,7 +29,7 @@ Software supply-chain attacks often hide in *copies* of popular libraries: a ven
 ## Install
 
 ```bash
-pip install git+https://github.com/Ferdi-krbk/vendorcheck
+pip install vendorcheck
 # or just download vendorcheck.py - it is a single file, stdlib only, Python 3.9+
 ```
 
