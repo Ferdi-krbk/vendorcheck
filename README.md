@@ -101,6 +101,9 @@ Archives are extracted safely with strict directory traversal (zip-slip) protect
 ## Limits
 
 - Packages completely stripped of all version indicators require metadata or a version attribute.
+- Unrecognized packages with missing version information trigger a warning (`--strict` exits with code 2).
+- When embedded packages lack `dist-info`, the directory name is assumed to be the PyPI package name. If import name and PyPI project name differ (e.g., `yaml` vs `PyYAML`, `PIL` vs `Pillow`), PyPI lookups will return 404.
+- Zero mandatory dependencies (pure Python stdlib), but matching platform-specific wheels relies on the optional `packaging` library (`packaging.tags`). If absent, it safely falls back to `sdist` where compiled platform artifacts might be flagged as "extra".
 - In cases where only sdist is available for C-extensions, build artifacts not present upstream may appear as "extra".
 - Archives nested deeper than 2 levels are not opened.
 - It proves your copy equals what PyPI serves, not that the PyPI release itself is benign. Combine with tools like `pip-audit`.

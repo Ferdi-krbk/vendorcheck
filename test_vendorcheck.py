@@ -15,8 +15,9 @@ def make_pkg(root: Path):
 
 def test_discover_dist_info(tmp_path):
     make_pkg(tmp_path)
-    (e,) = vc.discover(tmp_path)
+    (e,), unrec = vc.discover(tmp_path)
     assert (e.name, e.version, e.tops, e.source) == ("Foo-Bar", "1.2.3", ["foo"], "dist-info")
+    assert unrec == []
 
 
 def test_discover_version_py(tmp_path):
@@ -26,8 +27,9 @@ def test_discover_version_py(tmp_path):
     (tmp_path / "bar" / "sub").mkdir()
     (tmp_path / "bar" / "sub" / "__init__.py").write_text("")
     (tmp_path / "bar" / "sub" / "version.py").write_text("__version__ = '9'\n")
-    (e,) = vc.discover(tmp_path)  # subpackage version.py must be ignored
+    (e,), unrec = vc.discover(tmp_path)  # subpackage version.py must be ignored
     assert (e.name, e.version, e.source) == ("bar", "4.5", "version.py")
+    assert unrec == []
 
 
 def test_same_content_crlf(tmp_path):
@@ -138,9 +140,11 @@ def test_discover_underscore_version_and_init(tmp_path):
     (tmp_path / "pkg_b").mkdir()
     (tmp_path / "pkg_b" / "__init__.py").write_text("__version__ = '2.5.1'\n")
 
-    found = {e.name: (e.version, e.source) for e in vc.discover(tmp_path)}
+    found_list, unrec = vc.discover(tmp_path)
+    found = {e.name: (e.version, e.source) for e in found_list}
     assert found["pkg-a"] == ("1.0.0", "_version.py")
     assert found["pkg-b"] == ("2.5.1", "__init__.py")
+    assert unrec == []
 
 
 def test_pick_artifact_platform_wheel():
@@ -152,3 +156,44 @@ def test_pick_artifact_platform_wheel():
     art = vc.pick_artifact(urls)
     assert art is not None
     assert art["packagetype"] in ("bdist_wheel", "sdist")
+
+
+def test_version_regex_accepts_scm_chained_assignment():
+    for text, want in [
+        ("__version__ = '0.8.0'\n", "0.8.0"),
+        ("__version__ = version = '0.8.0'\n", "0.8.0"),
+        ("__version__: str = \"1.2.3\"\n", "1.2.3"),
+        ("x = 1\n__version__ = version = '2026.07.22'\n", "2026.07.22"),
+    ]:
+        assert vc.VERSION_ASSIGN_RE.search(text).group(1) == want
+
+
+def test_version_regex_ignores_non_assignments():
+    assert vc.VERSION_ASSIGN_RE.search("# __version__ = '1'\n") is None
+    assert vc.VERSION_ASSIGN_RE.search("version = '1'\n") is None
+
+
+def test_unrecognized_package_warning_and_strict(tmp_path, capsys):
+    pkg = tmp_path / "somemodule"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("# no version specified here\n")
+
+    # Without strict: should warn on stderr, but not crash
+    assert vc.main([str(tmp_path), "--allow-empty"]) == 0
+    err = capsys.readouterr().err
+    assert "warning: unrecognized package (version not found): somemodule" in err
+
+    # With strict: exit code 2
+    assert vc.main([str(tmp_path), "--allow-empty", "--strict"]) == 2
+
+
+def test_unsafe_zip_slip_returns_exit_code_2(tmp_path, capsys):
+    z = tmp_path / "evil.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("../escape.txt", "payload")
+
+    assert vc.main([str(z)]) == 2
+    err = capsys.readouterr().err
+    assert "archive error: unsafe path in archive: ../escape.txt" in err
+
+

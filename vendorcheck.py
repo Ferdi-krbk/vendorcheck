@@ -33,9 +33,14 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 IGNORED_DIRS = {"__pycache__"}
 IGNORED_SUFFIXES = (".pyc", ".pyo")
+# Matches `__version__ = "1.2"`, `__version__: str = "1.2"` and the chained form that
+# setuptools-scm / hatch-vcs generate: `__version__ = version = "1.2"`.
+VERSION_ASSIGN_RE = re.compile(
+    r"""^__version__\s*(?::\s*[^=\n]+)?=\s*(?:\w+\s*=\s*)*['"]([^'"]+)['"]""", re.M)
+
 UA = {"User-Agent": f"vendorcheck/{__version__} (+https://github.com/Ferdi-krbk/vendorcheck)"}
 
 
@@ -160,8 +165,9 @@ def guess_version_by_files(name: str, files_hashes: dict[str, str], cache: Path)
     return None
 
 
-def discover(root: Path) -> list[Embedded]:
+def discover(root: Path) -> tuple[list[Embedded], list[Path]]:
     found: list[Embedded] = []
+    unrecognized: list[Path] = []
     covered: set[Path] = set()
     for dirpath, dirnames, _ in os.walk(root):
         d = Path(dirpath)
@@ -195,8 +201,7 @@ def discover(root: Path) -> list[Embedded]:
             source_tag = "version.py"
             for vfile in ("version.py", "_version.py", "__init__.py"):
                 if vfile in filenames:
-                    m = re.search(r"""^__version__\s*=\s*['"]([^'"]+)['"]""",
-                                  read_text(d / vfile), re.M)
+                    m = VERSION_ASSIGN_RE.search(read_text(d / vfile))
                     if m:
                         found_ver = m.group(1)
                         source_tag = vfile
@@ -205,7 +210,9 @@ def discover(root: Path) -> list[Embedded]:
                 found.append(Embedded(d.name.replace("_", "-"), found_ver, d.parent,
                                       [d.name], source_tag))
                 covered.add(d.resolve())
-    return found
+            else:
+                unrecognized.append(d)
+    return found, unrecognized
 
 
 # -------------------------------------------------------------------- PyPI
@@ -448,11 +455,13 @@ STRINGS = {
     "en": {"err": "COULD NOT CHECK", "same": "files identical", "same1": "file identical",
            "mod": "modified", "extra": "extra", "miss": "missing",
            "tags": ("modified", "extra", "missing"),
-           "none": "No embedded packages found (v1 needs .dist-info / .egg-info / version.py)."},
+           "none": "No embedded packages found (v1 needs .dist-info / .egg-info / version.py).",
+           "unrec": "warning: unrecognized package (version not found):"},
     "tr": {"err": "KONTROL EDİLEMEDİ", "same": "dosya aynı", "same1": "dosya aynı",
            "mod": "değişmiş", "extra": "fazladan", "miss": "eksik",
            "tags": ("değişmiş", "fazladan", "eksik"),
-           "none": "Gömülü paket bulunamadı (v1: .dist-info / .egg-info / version.py gerekir)."},
+           "none": "Gömülü paket bulunamadı (v1: .dist-info / .egg-info / version.py gerekir).",
+           "unrec": "uyarı: tanınmayan paket (sürüm bulunamadı):"},
 }
 
 
@@ -487,6 +496,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--lang", choices=sorted(STRINGS), default="en", help="output language")
     ap.add_argument("--allow-empty", action="store_true",
                     help="exit 0 even if no embedded packages were found")
+    ap.add_argument("--strict", action="store_true",
+                    help="exit 2 if unrecognized package directories (without detectable version) are found")
     args = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -505,18 +516,33 @@ def main(argv: list[str] | None = None) -> int:
                 print("not a directory or zip-compatible archive", file=sys.stderr)
                 return 2
             root = tmp / "pkg"
-            with zipfile.ZipFile(src) as zf:
-                safe_extract_zip(zf, root)
+            try:
+                with zipfile.ZipFile(src) as zf:
+                    safe_extract_zip(zf, root)
+            except RuntimeError as ex:
+                print(f"archive error: {ex}", file=sys.stderr)
+                return 2
         cache = Path(args.cache) if args.cache else tmp / "cache"
         cache.mkdir(parents=True, exist_ok=True)
 
-        roots = [(root, "")] if args.no_nested else expand_nested(root, tmp)
+        try:
+            roots = [(root, "")] if args.no_nested else expand_nested(root, tmp)
+        except RuntimeError as ex:
+            print(f"archive error: {ex}", file=sys.stderr)
+            return 2
+
         wanted = {norm_name(n) for n in args.only} if args.only else None
         ignore = tuple(args.ignore)
         results: list[Result] = []
         seen: set = set()
+        all_unrecognized: list[str] = []
         for rdir, prefix in roots:
-            for e in discover(rdir):
+            embeds, unrec = discover(rdir)
+            for u in unrec:
+                rel = f"{prefix}{u.relative_to(rdir).as_posix()}"
+                if rel not in all_unrecognized:
+                    all_unrecognized.append(rel)
+            for e in embeds:
                 if wanted and norm_name(e.name) not in wanted:
                     continue
                 key = (norm_name(e.name), e.version, e.container)
@@ -524,6 +550,9 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 seen.add(key)
                 results.append(check_one(e, cache, rdir, ignore, args.verbose >= 2, prefix))
+
+        for u in all_unrecognized:
+            print(f"{STRINGS[args.lang]['unrec']} {u}", file=sys.stderr)
 
         if args.json:
             print(json.dumps([r.__dict__ | {"clean": r.clean} for r in results],
@@ -541,6 +570,8 @@ def main(argv: list[str] | None = None) -> int:
                             if tag == tags[0] and it in r.diffs:
                                 print("\n".join("        " + l for l in r.diffs[it].splitlines()))
         write_step_summary(results)
+        if all_unrecognized and args.strict:
+            return 2
         if not results:
             return 0 if args.allow_empty else 2
         if any(r.status == "error" for r in results):
