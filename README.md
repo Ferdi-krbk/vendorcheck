@@ -6,6 +6,8 @@
 
 **Is the Python library bundled inside your app, add-on or extension byte-for-byte the official PyPI release?**
 
+![vendorcheck terminal audit demo](assets/demo.png)
+
 Point it at a folder or an archive (`.zip`, `.xpi`, `.vsix`, `.fda`, `.whl`, any app bundle that is a zip). It finds the embedded Python packages, downloads the official release from PyPI, verifies the download against PyPI's published SHA-256, and compares **file by file**.
 
 ```console
