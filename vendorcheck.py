@@ -33,7 +33,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 IGNORED_DIRS = {"__pycache__"}
 IGNORED_SUFFIXES = (".pyc", ".pyo")
 # Matches `__version__ = "1.2"`, `__version__: str = "1.2"` and the chained form that
@@ -555,8 +555,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{STRINGS[args.lang]['unrec']} {u}", file=sys.stderr)
 
         if args.json:
-            print(json.dumps([r.__dict__ | {"clean": r.clean} for r in results],
-                             indent=2, ensure_ascii=False))
+            payload = [r.__dict__ | {"clean": r.clean} for r in results]
+            if all_unrecognized:
+                for u in all_unrecognized:
+                    payload.append({
+                        "name": u,
+                        "version": None,
+                        "source": "unrecognized",
+                        "location": u,
+                        "clean": False,
+                        "status": "unrecognized",
+                        "error": "version not found",
+                        "same": 0,
+                        "modified": [],
+                        "extra": [],
+                        "missing": [],
+                        "diffs": {}
+                    })
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
         else:
             if not results:
                 print(STRINGS[args.lang]["none"])

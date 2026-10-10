@@ -197,3 +197,18 @@ def test_unsafe_zip_slip_returns_exit_code_2(tmp_path, capsys):
     assert "archive error: unsafe path in archive: ../escape.txt" in err
 
 
+def test_unrecognized_package_in_json_output(tmp_path, capsys):
+    pkg = tmp_path / "unknownpkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("# no version\n")
+
+    assert vc.main([str(tmp_path), "--json", "--allow-empty"]) == 0
+    import json
+    out = json.loads(capsys.readouterr().out)
+    assert len(out) == 1
+    assert out[0]["name"] == "unknownpkg"
+    assert out[0]["status"] == "unrecognized"
+    assert out[0]["clean"] is False
+
+
+
