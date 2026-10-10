@@ -6,22 +6,42 @@
 
 **Is the Python library bundled inside your app, add-on or extension byte-for-byte the official PyPI release?**
 
+Point it at a folder or an archive (`.zip`, `.xpi`, `.vsix`, `.fda`, `.whl`, any app bundle that is a zip). It finds embedded Python packages, downloads the official release from PyPI, verifies the download against PyPI's published SHA-256, and compares **file by file**.
+
+### Demo: Intentionally Tampered Package Audit
+
+Below is a demonstration audit of a deliberately modified package copy (`demo-tampered.fda`) showing how unauthorized modifications and dropped files are flagged alongside verified clean packages:
+
 ![vendorcheck terminal audit demo](assets/demo.png)
 
-Point it at a folder or an archive (`.zip`, `.xpi`, `.vsix`, `.fda`, `.whl`, any app bundle that is a zip). It finds the embedded Python packages, downloads the official release from PyPI, verifies the download against PyPI's published SHA-256, and compares **file by file**.
-
 ```console
-$ vendorcheck lib/ -v          # idna with one file edited and one file added
-idna 3.7: 8 files identical, 1 modified, 1 extra.
-    [modified] idna/core.py
-    [extra] idna/evil.py
+$ vendorcheck demo-tampered.fda -vv
+yt_dlp 2026.08.19: 1048 files identical, 1 modified, 1 extra.
+    [modified] yt_dlp/extractor/commonprotocols.py
+        --- official/yt_dlp/extractor/commonprotocols.py
+        +++ embedded/yt_dlp/extractor/commonprotocols.py
+        @@ -15,6 +15,8 @@
+        +    # DEMO: injected line
+        +    import urllib.request; urllib.request.urlopen("http://demo.invalid/ping")
+    [extra] yt_dlp/demo_extra.py
+certifi 2026.07.22: 7 files identical, 0 modified, 0 extra.
+yt_dlp_ejs 0.8.0: 6 files identical, 0 modified, 0 extra.
 ```
 
-Real run on a clean `pip install --target` of yt-dlp:
+#### Reproduce this locally (4 simple commands):
+```bash
+# 1. Vendor a library into a test directory
+pip install yt-dlp certifi --target ./test-bundle
 
-```console
-$ vendorcheck lib/
-yt_dlp 2026.8.19: 1049 files identical, 0 modified, 0 extra.
+# 2. Tamper with a file and add an extra payload file
+echo '# injected line' >> ./test-bundle/yt_dlp/extractor/commonprotocols.py
+echo '# extra file' > ./test-bundle/yt_dlp/demo_extra.py
+
+# 3. Package it into a zip archive
+zip -r demo-tampered.zip ./test-bundle
+
+# 4. Audit it with vendorcheck
+vendorcheck demo-tampered.zip -vv
 ```
 
 ## Why
@@ -74,12 +94,15 @@ The job fails when embedded code differs from the official release. The repo's o
 
 ## Real-world origin story: Auditing an extension
 
-`vendorcheck` was built out of a real supply-chain audit: inspecting a popular Free Download Manager (FDM) extension package (`Elephant.fda`) that embedded its own Python runtime and bundled libraries like `yt-dlp`. 
+`vendorcheck` was built out of a real supply-chain audit: inspecting the official Free Download Manager (FDM) extension package (`Elephant.fda`) which embeds its own Python runtime and bundled libraries (`yt-dlp`, `certifi`, `yt_dlp_ejs`).
 
-Instead of manually unzipping releases and writing one-off scripts, `vendorcheck` automates inspecting whole directories or extension packages in seconds:
+The audit verified the real extension release as clean (1047/1049 files identical, with harmless packaging differences). Instead of manually unzipping releases and writing one-off scripts, `vendorcheck` automates inspecting whole directories or extension packages in seconds:
+
 ```console
 $ vendorcheck Elephant.fda -v
-yt_dlp 2026.8.19 [python/lib/site-packages!/]: 1049 files identical, 0 modified, 0 extra.
+yt_dlp 2026.8.19 [python/lib/site-packages!/]: 1047 files identical, 1 modified, 1 extra.
+certifi 2026.07.22 [python/lib/site-packages!/]: 7 files identical, 0 modified, 0 extra.
+yt_dlp_ejs 0.8.0 [python/lib/site-packages!/]: 6 files identical, 0 modified, 0 extra.
 ```
 
 ## How it works
